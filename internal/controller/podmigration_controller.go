@@ -51,12 +51,12 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// 1. Get the Pod information
 	// 2. Get the destination node information
-	// 3. Signal source node to checkpoint
+	// 3. Signal source node to checkpoint, signal to controller when it is done.
 	// 4. Destination node downloads the checkpoint from source node
 	// 5. Destination node builds image and push to some local registry that is accessible by the kubelet in the destination node.
-	// 6. Destination node signals to controller that it has the image.
+	// 6. Destination node signals to controller when it is done pushing.
 	// 7. Delete old Pod.
-	// 8. Create new Pod with the same Pod name and new image.
+	// 8. Create new Pod with the same Pod name and the new image (along with all the other configuration).
 
 	return ctrl.Result{}, nil
 }
