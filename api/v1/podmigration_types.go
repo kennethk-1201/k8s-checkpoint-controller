@@ -54,7 +54,7 @@ type PodMigrationStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	Status MigrationStatus `json:"status"`
+	Phase MigrationStatus `json:"status"`
 
 	// Information when was the migration completed
 	LastCompletedTime *metav1.Time `json:"lastScheduleTime,omitempty"`
