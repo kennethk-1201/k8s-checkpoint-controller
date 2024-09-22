@@ -19,12 +19,14 @@ package controller
 import (
 	"context"
 
+	migrationv1 "k8s-checkpoint-controller/api/v1"
+
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	migrationv1 "k8s-checkpoint-controller/api/v1"
 )
 
 // PodMigrationReconciler reconciles a PodMigration object
@@ -47,12 +49,31 @@ type PodMigrationReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	l := log.FromContext(ctx)
 
 	// 1. Get the Pod information
+	var migration migrationv1.PodMigration
+	if err := r.Get(ctx, req.NamespacedName, &migration); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	l.Info("Migration", "Name", migration.Name, "Namespace", migration.Namespace)
+
+	pod := &corev1.Pod{}
+	podNamespacedName := types.NamespacedName{
+		Namespace: req.Namespace,
+		Name:      migration.Spec.PodName,
+	}
+
+	if err := r.Get(ctx, podNamespacedName, pod); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	l.Info("Pod", "Name", pod.Name, "Namespace", pod.Namespace)
+
 	// 2. Get the destination node information
 	// 3. Signal source node to checkpoint, signal to controller when it is done.
-	// 4. Destination node downloads the checkpoint from source node
+	// 4. Signal to destination node to download the checkpoint from source node
 	// 5. Destination node builds image and push to some local registry that is accessible by the kubelet in the destination node.
 	// 6. Destination node signals to controller when it is done pushing.
 	// 7. Delete old Pod.
