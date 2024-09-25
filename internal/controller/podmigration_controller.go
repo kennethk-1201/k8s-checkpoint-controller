@@ -40,38 +40,38 @@ type PodMigrationReconciler struct {
 
 func (r *PodMigrationReconciler) GetInfo(ctx context.Context, req ctrl.Request) (*migrationv1.PodMigration, *corev1.Pod, *corev1.Node, error) {
 	l := log.FromContext(ctx)
-	var migration *migrationv1.PodMigration
+	var migration migrationv1.PodMigration
 
-	if err := r.Get(ctx, req.NamespacedName, migration); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, &migration); err != nil {
 		return nil, nil, nil, client.IgnoreNotFound(err)
 	}
 
 	l.Info("Migration", "Name", migration.Name, "Namespace", migration.Namespace)
 
-	var pod *corev1.Pod
+	var pod corev1.Pod
 	podNamespacedName := types.NamespacedName{
 		Namespace: req.Namespace,
 		Name:      migration.Spec.PodName,
 	}
 
-	if err := r.Get(ctx, podNamespacedName, pod); err != nil {
+	if err := r.Get(ctx, podNamespacedName, &pod); err != nil {
 		return nil, nil, nil, client.IgnoreNotFound(err)
 	}
 
 	l.Info("Pod", "Name", pod.Name, "Namespace", pod.Namespace)
 
-	var destNode *corev1.Node
+	var destNode corev1.Node
 	nodeNamespacedName := types.NamespacedName{
 		Name: migration.Spec.NodeName,
 	}
 
-	if err := r.Get(ctx, nodeNamespacedName, destNode); err != nil {
+	if err := r.Get(ctx, nodeNamespacedName, &destNode); err != nil {
 		return nil, nil, nil, client.IgnoreNotFound(err)
 	}
 
 	l.Info("Destination Node", "Name", destNode.Name)
 
-	return migration, pod, destNode, nil
+	return &migration, &pod, &destNode, nil
 }
 
 // +kubebuilder:rbac:groups=migration.k8s-checkpoint-controller,resources=podmigrations,verbs=get;list;watch;create;update;patch;delete
