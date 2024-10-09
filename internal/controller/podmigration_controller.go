@@ -18,8 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 
 	migrationv1 "k8s-checkpoint-controller/api/v1"
 
@@ -96,6 +94,10 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	if migration.Status.Phase == migrationv1.Running {
+		return ctrl.Result{}, nil
+	}
+
 	// 2. Start migration process
 	migration.Status.Phase = migrationv1.Running
 
@@ -106,21 +108,21 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// 3. Signal source node to checkpoint, signal to controller when it is done.
 
 	// TODO: Set port to be env variable
-	_, err = http.Post(fmt.Sprintf("http://%s:2837/checkpoint/%s/%s", pod.Status.HostIP, pod.Namespace, pod.Name), "application/json", nil)
+	// _, err = http.Post(fmt.Sprintf("http://%s:2837/checkpoint/%s/%s", pod.Status.HostIP, pod.Namespace, pod.Name), "application/json", nil)
 
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	// if err != nil {
+	// 	return ctrl.Result{}, err
+	// }
 
 	// 4. Signal to destination node to download the checkpoint from source node
 	// 5. Destination node builds image and push to some local registry that is accessible by the kubelet in the destination node.
 	// 6. Destination node signals to controller when it is done pushing.
 
-	_, err = http.Post(fmt.Sprintf("http://%s:2837/checkpoint/%s/%s", destNode.Status.Addresses[0], pod.Namespace, pod.Name), "application/json", nil)
+	// _, err = http.Post(fmt.Sprintf("http://%s:2837/checkpoint/%s/%s", destNode.Status.Addresses[0], pod.Namespace, pod.Name), "application/json", nil)
 
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	// if err != nil {
+	// 	return ctrl.Result{}, err
+	// }
 
 	// 7. Delete old Pod.
 	if err := r.Delete(ctx, pod, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
@@ -128,20 +130,9 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// 8. Create new Pod with the same Pod name and the new image (along with all the other configuration).
-	migratedPod := corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:  pod.Spec.Containers[0].Name,
-					Image: "", // will be named by some convention
-				},
-			},
-		},
-	}
+	var migratedPod corev1.Pod
+	copyRelevantFields(pod, &migratedPod)
+	migratedPod.Spec.NodeName = destNode.Name
 
 	if err := r.Create(ctx, &migratedPod); err != nil {
 		return ctrl.Result{}, err
@@ -155,6 +146,20 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func copyRelevantFields(src *corev1.Pod, dst *corev1.Pod) {
+	dst.Name = src.Name
+	dst.Namespace = src.Namespace
+	dst.Spec.Containers = []corev1.Container{}
+
+	for i := 0; i < len(src.Spec.Containers); i++ {
+		var newContainer corev1.Container
+		newContainer.Name = src.Spec.Containers[i].Name
+		newContainer.Image = src.Spec.Containers[i].Image
+
+		dst.Spec.Containers = append(dst.Spec.Containers, newContainer)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
