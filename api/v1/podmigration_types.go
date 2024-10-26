@@ -43,10 +43,12 @@ type PodMigrationSpec struct {
 type MigrationStatus string
 
 const (
-	Pending   MigrationStatus = "Pending"
-	Running   MigrationStatus = "Running"
-	Succeeded MigrationStatus = "Succeeded"
-	Failed    MigrationStatus = "Failed"
+	Pending    MigrationStatus = "Pending"
+	Migrating  MigrationStatus = "Migrating"
+	Restoring  MigrationStatus = "Restoring"
+	CleaningUp MigrationStatus = "CleaningUp"
+	Succeeded  MigrationStatus = "Succeeded"
+	Failed     MigrationStatus = "Failed"
 )
 
 // PodMigrationStatus defines the observed state of PodMigration

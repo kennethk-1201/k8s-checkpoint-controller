@@ -18,11 +18,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 
 	migrationv1 "k8s-checkpoint-controller/api/v1"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -72,6 +75,21 @@ func (r *PodMigrationReconciler) GetInfo(ctx context.Context, req ctrl.Request) 
 	return &migration, &pod, &destNode, nil
 }
 
+func (r *PodMigrationReconciler) IsPodRestored(ctx context.Context, pod *corev1.Pod) (bool, error) {
+	migratedPodNamespaceName := types.NamespacedName{
+		Namespace: pod.Namespace,
+		Name:      pod.Name + "-restored",
+	}
+
+	var migratedPod corev1.Pod
+
+	if err := r.Get(ctx, migratedPodNamespaceName, &migratedPod); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+
+	return migratedPod.Status.Phase == corev1.PodSucceeded, nil
+}
+
 // +kubebuilder:rbac:groups=migration.k8s-checkpoint-controller,resources=podmigrations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=migration.k8s-checkpoint-controller,resources=podmigrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=migration.k8s-checkpoint-controller,resources=podmigrations/finalizers,verbs=update
@@ -87,6 +105,9 @@ func (r *PodMigrationReconciler) GetInfo(ctx context.Context, req ctrl.Request) 
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
+	_ = log.FromContext(ctx)
+	API_SERVER := "kubernetes.default.svc.cluster.local"
+
 	// 1. Get the necessary information
 	migration, pod, destNode, err := r.GetInfo(ctx, req)
 
@@ -94,62 +115,80 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
-	if migration.Status.Phase == migrationv1.Running {
+	switch migration.Status.Phase {
+	case migrationv1.Pending:
+		// This request is sent to the Kubelet via the API server using its in-built proxy path.
+		// The /migrate endpoint will trigger an asynchronous migration process in the source node.
+
+		// NOTE: Endpoint does not exist yet!
+		_, err = http.Post(fmt.Sprintf("http://%s/api/v1/nodes/%s/proxy/migrate/%s/%s", API_SERVER, pod.Spec.NodeName, pod.Namespace, pod.Name), "application/json", nil)
+
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		migration.Status.Phase = migrationv1.Migrating
+
+		if err := r.Status().Update(ctx, migration); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		return ctrl.Result{}, nil
-	}
+	case migrationv1.Migrating:
+		// Error handling
+		return ctrl.Result{}, nil
+	case migrationv1.Restoring:
+		// This state is set by the source kubelet after migration is completed.
 
-	// 2. Start migration process
-	migration.Status.Phase = migrationv1.Running
+		// Check if pod is already restored
+		podRestored, err := r.IsPodRestored(ctx, pod)
 
-	if err := r.Status().Update(ctx, migration); err != nil {
-		return ctrl.Result{}, err
-	}
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 
-	// 3. Signal source node to checkpoint, signal to controller when it is done.
+		if podRestored {
+			migration.Status.Phase = migrationv1.CleaningUp
 
-	// TODO: Set port to be env variable
-	// _, err = http.Post(fmt.Sprintf("http://%s:2837/checkpoint/%s/%s", pod.Status.HostIP, pod.Namespace, pod.Name), "application/json", nil)
+			if err := r.Status().Update(ctx, migration); err != nil {
+				return ctrl.Result{}, err
+			}
+		} else {
+			// 8. Create new Pod with the same Pod name and the new image (along with all the other configuration).
+			var migratedPod corev1.Pod
+			copyRelevantFields(pod, &migratedPod)
 
-	// if err != nil {
-	// 	return ctrl.Result{}, err
-	// }
+			migratedPod.Name = pod.Name + "-restored"
+			migratedPod.Spec.NodeName = destNode.Name
+			migratedPod.Annotations["podtype"] = "restore"
 
-	// 4. Signal to destination node to download the checkpoint from source node
-	// 5. Destination node builds image and push to some local registry that is accessible by the kubelet in the destination node.
-	// 6. Destination node signals to controller when it is done pushing.
+			if err := r.Create(ctx, &migratedPod); err != nil {
+				return ctrl.Result{}, err
+			}
 
-	// _, err = http.Post(fmt.Sprintf("http://%s:2837/checkpoint/%s/%s", destNode.Status.Addresses[0], pod.Namespace, pod.Name), "application/json", nil)
+			return ctrl.Result{}, nil
+		}
+	case migrationv1.CleaningUp:
+		// Delete old Pod.
+		if err := r.Delete(ctx, pod, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			return ctrl.Result{}, err
+		}
 
-	// if err != nil {
-	// 	return ctrl.Result{}, err
-	// }
+		migration.Status.Phase = migrationv1.Succeeded
 
-	// 7. Delete old Pod.
-	if err := r.Delete(ctx, pod, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// 8. Create new Pod with the same Pod name and the new image (along with all the other configuration).
-	var migratedPod corev1.Pod
-	copyRelevantFields(pod, &migratedPod)
-	migratedPod.Spec.NodeName = destNode.Name
-
-	if err := r.Create(ctx, &migratedPod); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// 9. End migration process
-	migration.Status.Phase = migrationv1.Succeeded
-
-	if err := r.Status().Update(ctx, migration); err != nil {
-		return ctrl.Result{}, err
+		if err := r.Status().Update(ctx, migration); err != nil {
+			return ctrl.Result{}, err
+		}
+	case migrationv1.Succeeded:
+		return ctrl.Result{}, nil
+	case migrationv1.Failed:
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil
 }
 
 func copyRelevantFields(src *corev1.Pod, dst *corev1.Pod) {
-	dst.Name = src.Name
 	dst.Namespace = src.Namespace
 	dst.Spec.Containers = []corev1.Container{}
 
