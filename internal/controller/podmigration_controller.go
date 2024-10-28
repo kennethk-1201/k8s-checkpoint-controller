@@ -119,9 +119,9 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	case migrationv1.Pending:
 		// This request is sent to the Kubelet via the API server using its in-built proxy path.
 		// The /migrate endpoint will trigger an asynchronous migration process in the source node.
-
-		// NOTE: Endpoint does not exist yet!
-		_, err = http.Post(fmt.Sprintf("http://%s/api/v1/nodes/%s/proxy/migrate/%s/%s", API_SERVER, pod.Spec.NodeName, pod.Namespace, pod.Name), "application/json", nil)
+		// TODO: complete the endpoint
+		endpoint := fmt.Sprintf("http://%s/api/v1/nodes/%s/proxy/migrate/%s/%s", API_SERVER, pod.Spec.NodeName, pod.Namespace, pod.Name)
+		_, err = http.Post(endpoint, "application/json", nil)
 
 		if err != nil {
 			return ctrl.Result{}, err
@@ -135,12 +135,19 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 		return ctrl.Result{}, nil
 	case migrationv1.Migrating:
-		// Error handling
+		// Wait for signal by the source node that the checkpoint is done.
+		// TODO: Add synchronization to prevent race conditions.
+		if val, ok := pod.Annotations["checkpoint.completed"]; ok && val == "done" {
+			migration.Status.Phase = migrationv1.Restoring
+
+			if err := r.Status().Update(ctx, migration); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+
 		return ctrl.Result{}, nil
 	case migrationv1.Restoring:
-		// This state is set by the source kubelet after migration is completed.
-
-		// Check if pod is already restored
+		// Restore the Pod and wait for it to successfully start.
 		podRestored, err := r.IsPodRestored(ctx, pod)
 
 		if err != nil {
@@ -153,14 +160,16 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			if err := r.Status().Update(ctx, migration); err != nil {
 				return ctrl.Result{}, err
 			}
+
+			return ctrl.Result{}, nil
 		} else {
-			// 8. Create new Pod with the same Pod name and the new image (along with all the other configuration).
+			// Create new Pod with a different Pod name and set pod.type = restore.
 			var migratedPod corev1.Pod
 			copyRelevantFields(pod, &migratedPod)
 
 			migratedPod.Name = pod.Name + "-restored"
 			migratedPod.Spec.NodeName = destNode.Name
-			migratedPod.Annotations["podtype"] = "restore"
+			migratedPod.Annotations["pod.type"] = "restore"
 
 			if err := r.Create(ctx, &migratedPod); err != nil {
 				return ctrl.Result{}, err
@@ -169,7 +178,7 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, nil
 		}
 	case migrationv1.CleaningUp:
-		// Delete old Pod.
+		// Delete old Pod and update that migration succeeded.
 		if err := r.Delete(ctx, pod, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -179,6 +188,8 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Status().Update(ctx, migration); err != nil {
 			return ctrl.Result{}, err
 		}
+
+		return ctrl.Result{}, nil
 	case migrationv1.Succeeded:
 		return ctrl.Result{}, nil
 	case migrationv1.Failed:
