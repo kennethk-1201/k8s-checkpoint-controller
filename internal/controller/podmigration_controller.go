@@ -115,6 +115,10 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	if migration.Status.Phase == "" {
+		migration.Status.Phase = migrationv1.Pending
+	}
+
 	switch migration.Status.Phase {
 	case migrationv1.Pending:
 		// This request is sent to the Kubelet via the API server using its in-built proxy path.
