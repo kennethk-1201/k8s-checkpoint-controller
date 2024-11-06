@@ -59,8 +59,7 @@ spec:
                 format: date-time
                 type: string
               status:
-                default:
-                  phase: Pending
+                default: Pending
                 type: string
             required:
             - status

@@ -18,8 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 
 	migrationv1 "k8s-checkpoint-controller/api/v1"
 
@@ -30,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -106,7 +105,7 @@ func (r *PodMigrationReconciler) IsPodRestored(ctx context.Context, pod *corev1.
 func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	_ = log.FromContext(ctx)
-	API_SERVER := "kubernetes.default.svc.cluster.local"
+	// API_SERVER := "kubernetes.default.svc.cluster.local"
 
 	// 1. Get the necessary information
 	migration, pod, destNode, err := r.GetInfo(ctx, req)
@@ -124,12 +123,15 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// This request is sent to the Kubelet via the API server using its in-built proxy path.
 		// The /migrate endpoint will trigger an asynchronous migration process in the source node.
 		// TODO: complete the endpoint
-		endpoint := fmt.Sprintf("http://%s/api/v1/nodes/%s/proxy/migrate/%s/%s", API_SERVER, pod.Spec.NodeName, pod.Namespace, pod.Name)
-		_, err = http.Post(endpoint, "application/json", nil)
 
-		if err != nil {
-			return ctrl.Result{}, err
-		}
+		/*
+			endpoint := fmt.Sprintf("http://%s/api/v1/nodes/%s/proxy/migrate/%s/%s", API_SERVER, pod.Spec.NodeName, pod.Namespace, pod.Name)
+			_, err = http.Post(endpoint, "application/json", nil)
+
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		*/
 
 		migration.Status.Phase = migrationv1.Migrating
 
@@ -141,7 +143,9 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	case migrationv1.Migrating:
 		// Wait for signal by the source node that the checkpoint is done.
 		// TODO: Add synchronization to prevent race conditions.
-		if val, ok := pod.Annotations["checkpoint.completed"]; ok && val == "done" {
+
+		// if val, ok := pod.Annotations["checkpoint.completed"]; ok && val == "done"
+		{
 			migration.Status.Phase = migrationv1.Restoring
 
 			if err := r.Status().Update(ctx, migration); err != nil {
@@ -173,7 +177,12 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 			migratedPod.Name = pod.Name + "-restored"
 			migratedPod.Spec.NodeName = destNode.Name
-			migratedPod.Annotations["pod.type"] = "restore"
+
+			if migratedPod.Annotations == nil {
+				migratedPod.Annotations = make(map[string]string)
+			}
+
+			migratedPod.Annotations["pod.type"] = "restore" // label for kubelet to know to restore
 
 			if err := r.Create(ctx, &migratedPod); err != nil {
 				return ctrl.Result{}, err
@@ -220,5 +229,6 @@ func copyRelevantFields(src *corev1.Pod, dst *corev1.Pod) {
 func (r *PodMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&migrationv1.PodMigration{}).
+		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}). // can add more filters in the future
 		Complete(r)
 }

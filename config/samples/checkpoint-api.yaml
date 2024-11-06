@@ -1,33 +1,33 @@
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: checkpoint-api
-  namespace: kube-system
-spec:
-  selector:
-    matchLabels:
-      name: checkpoint-api
-  template:
-    metadata:
-      labels:
-        name: checkpoint-api
-    spec:
-      # Note that control plane nodes will not run the pods. (no reason, we can change it in the future)
-      containers:
-      - name: checkpoint-api
-        image: ghcr.io/kennethk-1201/k8s-checkpoint-api:main
-        resources:
-          requests:
-            cpu: 100m
-            memory: 200Mi
-        volumeMounts:
-        - name: checkpoints
-          mountPath: /checkpoints
-      # it may be desirable to set a high priority class to ensure that a DaemonSet Pod
-      # preempts running Pods
-      # priorityClassName: important
-      terminationGracePeriodSeconds: 30
-      volumes:
-      - name: checkpoints
-        hostPath:
-          path: /var/lib/kubelet/checkpoints
+# apiVersion: apps/v1
+# kind: DaemonSet
+# metadata:
+#   name: checkpoint-api
+#   namespace: kube-system
+# spec:
+#   selector:
+#     matchLabels:
+#       name: checkpoint-api
+#   template:
+#     metadata:
+#       labels:
+#         name: checkpoint-api
+#     spec:
+#       # Note that control plane nodes will not run the pods. (no reason, we can change it in the future)
+#       containers:
+#       - name: checkpoint-api
+#         image: ghcr.io/kennethk-1201/k8s-checkpoint-api:main
+#         resources:
+#           requests:
+#             cpu: 100m
+#             memory: 200Mi
+#         volumeMounts:
+#         - name: checkpoints
+#           mountPath: /checkpoints
+#       # it may be desirable to set a high priority class to ensure that a DaemonSet Pod
+#       # preempts running Pods
+#       # priorityClassName: important
+#       terminationGracePeriodSeconds: 30
+#       volumes:
+#       - name: checkpoints
+#         hostPath:
+#           path: /var/lib/kubelet/checkpoints
