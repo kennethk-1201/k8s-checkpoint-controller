@@ -57,6 +57,7 @@ type PodMigrationStatus struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// +kubebuilder:default:="Pending"
+	// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.Phase`
 	Phase MigrationStatus `json:"status"`
 
 	// Information when was the migration completed

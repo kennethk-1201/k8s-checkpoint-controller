@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // PodMigrationReconciler reconciles a PodMigration object
@@ -38,7 +39,7 @@ type PodMigrationReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-func (r *PodMigrationReconciler) GetInfo(ctx context.Context, req ctrl.Request) (*migrationv1.PodMigration, *corev1.Pod, *corev1.Node, error) {
+func (r *PodMigrationReconciler) GetMigrationInfo(ctx context.Context, req ctrl.Request) (*migrationv1.PodMigration, *corev1.Pod, *corev1.Node, error) {
 	l := log.FromContext(ctx)
 	var migration migrationv1.PodMigration
 
@@ -86,7 +87,7 @@ func (r *PodMigrationReconciler) IsPodRestored(ctx context.Context, pod *corev1.
 		return false, client.IgnoreNotFound(err)
 	}
 
-	return migratedPod.Status.Phase == corev1.PodSucceeded, nil
+	return migratedPod.Status.Phase == corev1.PodRunning, nil
 }
 
 // +kubebuilder:rbac:groups=migration.k8s-checkpoint-controller,resources=podmigrations,verbs=get;list;watch;create;update;patch;delete
@@ -108,7 +109,7 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// API_SERVER := "kubernetes.default.svc.cluster.local"
 
 	// 1. Get the necessary information
-	migration, pod, destNode, err := r.GetInfo(ctx, req)
+	migration, pod, destNode, err := r.GetMigrationInfo(ctx, req)
 
 	if err != nil {
 		return ctrl.Result{}, err
@@ -118,10 +119,12 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		migration.Status.Phase = migrationv1.Pending
 	}
 
+	// TO DO: Shift away from dependency on status as it is prone to errors.
 	switch migration.Status.Phase {
 	case migrationv1.Pending:
 		// This request is sent to the Kubelet via the API server using its in-built proxy path.
 		// The /migrate endpoint will trigger an asynchronous migration process in the source node.
+
 		// TODO: complete the endpoint
 
 		/*
@@ -182,7 +185,16 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				migratedPod.Annotations = make(map[string]string)
 			}
 
-			migratedPod.Annotations["pod.type"] = "restore" // label for kubelet to know to restore
+			if migratedPod.Labels == nil {
+				migratedPod.Labels = make(map[string]string)
+			}
+
+			// metadata for kubelet
+			migratedPod.Annotations["pod.type"] = "restore"
+
+			// metadata for controller to filter and reconcile
+			migratedPod.Annotations["migration"] = migration.Name
+			migratedPod.Labels["restore"] = "true"
 
 			if err := r.Create(ctx, &migratedPod); err != nil {
 				return ctrl.Result{}, err
@@ -229,6 +241,24 @@ func copyRelevantFields(src *corev1.Pod, dst *corev1.Pod) {
 func (r *PodMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&migrationv1.PodMigration{}).
-		Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}). // can add more filters in the future
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+				// Check if the Pod has the label 'restore: "true"'
+				if val, ok := obj.GetLabels()["restore"]; ok && val == "true" {
+					// If the label is present and set to "true", trigger reconciliation.
+					return []reconcile.Request{
+						{
+							NamespacedName: types.NamespacedName{
+								Name:      obj.GetAnnotations()["migration"],
+								Namespace: obj.GetNamespace(),
+							},
+						},
+					}
+				}
+				// If the label is not present or doesn't match, don't trigger reconciliation
+				return []reconcile.Request{}
+			}),
+		).
 		Complete(r)
 }

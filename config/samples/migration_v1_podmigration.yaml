@@ -4,8 +4,8 @@ metadata:
   labels:
     app.kubernetes.io/name: k8s-checkpoint-controller
     app.kubernetes.io/managed-by: kustomize
-  name: test
+  name: test2
 spec:
-  podName: webserver
-  nodeName: worker-node01
+  podName: webserver-restored
+  nodeName: worker-node02
   nodeSelector: hello
