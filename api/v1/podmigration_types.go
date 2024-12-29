@@ -32,23 +32,24 @@ type PodMigrationSpec struct {
 	PodName string `json:"podName"`
 
 	// +kubebuilder:validation:MinLength=0
-	// +optional
-	NodeName string `json:"nodeName"`
+	NewPodName string `json:"newPodName"`
 
 	// +kubebuilder:validation:MinLength=0
 	// +optional
-	NodeSelector string `json:"nodeSelector"`
+	NodeName string `json:"nodeName"`
+
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector"`
 }
 
-type MigrationStatus string
+type PodMigrationPhase string
 
 const (
-	Pending    MigrationStatus = "Pending"
-	Migrating  MigrationStatus = "Migrating"
-	Restoring  MigrationStatus = "Restoring"
-	CleaningUp MigrationStatus = "CleaningUp"
-	Succeeded  MigrationStatus = "Succeeded"
-	Failed     MigrationStatus = "Failed"
+	Pending   PodMigrationPhase = "Pending"
+	Restoring PodMigrationPhase = "Restoring"
+	Succeeded PodMigrationPhase = "Succeeded"
+	Failed    PodMigrationPhase = "Failed"
+	Unknown   PodMigrationPhase = "Unknown"
 )
 
 // PodMigrationStatus defines the observed state of PodMigration
@@ -58,7 +59,7 @@ type PodMigrationStatus struct {
 
 	// +kubebuilder:default:="Pending"
 	// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=`.status.Phase`
-	Phase MigrationStatus `json:"status"`
+	Phase PodMigrationPhase `json:"status"`
 
 	// Information when was the migration completed
 	LastCompletedTime *metav1.Time `json:"lastScheduleTime,omitempty"`
@@ -72,7 +73,8 @@ type PodMigration struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   PodMigrationSpec   `json:"spec,omitempty"`
+	Spec PodMigrationSpec `json:"spec,omitempty"`
+	// +kubebuilder:default:={"phase":"Pending"}
 	Status PodMigrationStatus `json:"status,omitempty"`
 }
 

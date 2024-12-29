@@ -39,19 +39,26 @@ spec:
           spec:
             description: PodMigrationSpec defines the desired state of PodMigration
             properties:
+              newPodName:
+                minLength: 0
+                type: string
               nodeName:
                 minLength: 0
                 type: string
               nodeSelector:
-                minLength: 0
-                type: string
+                additionalProperties:
+                  type: string
+                type: object
               podName:
                 minLength: 0
                 type: string
             required:
+            - newPodName
             - podName
             type: object
           status:
+            default:
+              phase: Pending
             description: PodMigrationStatus defines the observed state of PodMigration
             properties:
               lastScheduleTime:
