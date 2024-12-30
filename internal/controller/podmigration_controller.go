@@ -19,8 +19,8 @@ package controller
 import (
 	"context"
 	"github.com/go-logr/logr"
-
 	migrationv1 "k8s-checkpoint-controller/api/v1"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,6 +31,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+var MigrationLabel = "kubernetes.io/associated-migration"
+var SourcePodLabel = "kubernetes.io/source-pod"
+var SourceNamespaceLabel = "kubernetes.io/source-namespace"
 
 var phaseMapper = map[corev1.PodPhase]migrationv1.PodMigrationPhase{
 	corev1.PodPending:   migrationv1.Restoring,
@@ -68,12 +72,22 @@ func (r *PodMigrationReconciler) getMigrationInfo(ctx context.Context, req ctrl.
 }
 
 func (r *PodMigrationReconciler) createRestoredPodSpec(sourcePod corev1.Pod, migration migrationv1.PodMigration) corev1.Pod {
+
+	// TODO: Did we copy all the relevant fields?
 	var restoredPod corev1.Pod
 	restoredPod.Spec = sourcePod.Spec
-	restoredPod.Name = migration.Spec.PodName
+	restoredPod.Name = migration.Spec.NewPodName
 	restoredPod.Namespace = migration.Namespace
 	restoredPod.Spec.NodeName = migration.Spec.NodeName
 	restoredPod.Spec.NodeSelector = migration.Spec.NodeSelector
+
+	if restoredPod.Annotations == nil {
+		restoredPod.Annotations = map[string]string{}
+	}
+
+	restoredPod.Annotations[MigrationLabel] = migration.Name
+	restoredPod.Annotations[SourcePodLabel] = sourcePod.Name
+	restoredPod.Annotations[SourceNamespaceLabel] = sourcePod.Namespace
 
 	return restoredPod
 }
@@ -119,18 +133,27 @@ func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Reques
 func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logs := log.FromContext(ctx)
 	migration, restoredPod, err := r.restorePod(ctx, req, logs)
-	if err != nil {
+	result := ctrl.Result{}
+
+	if migration == nil {
+		result.RequeueAfter = time.Second * 5
+		return result, err
+	} else if err != nil {
 		migration.Status.Phase = migrationv1.Failed
 	} else {
 		migration.Status.Phase = phaseMapper[restoredPod.Status.Phase]
 	}
 
-	if err = r.Status().Update(ctx, migration); err != nil {
-		logs.Error(err, "unable to update Migration status")
-		return ctrl.Result{}, err
+	if migration.Status.Phase != migrationv1.Succeeded {
+		result.RequeueAfter = time.Second * 5
 	}
 
-	return ctrl.Result{}, nil
+	if err = r.Status().Update(ctx, migration); err != nil {
+		logs.Error(err, "unable to update Migration status")
+		return result, err
+	}
+
+	return result, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -140,7 +163,7 @@ func (r *PodMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-				if m, ok := obj.GetLabels()["kubernetes.io/associated-migration"]; ok {
+				if m, ok := obj.GetLabels()[MigrationLabel]; ok {
 					return []reconcile.Request{
 						{
 							NamespacedName: types.NamespacedName{

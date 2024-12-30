@@ -73,8 +73,7 @@ type PodMigration struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec PodMigrationSpec `json:"spec,omitempty"`
-	// +kubebuilder:default:={"phase":"Pending"}
+	Spec   PodMigrationSpec   `json:"spec,omitempty"`
 	Status PodMigrationStatus `json:"status,omitempty"`
 }
 

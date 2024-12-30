@@ -57,8 +57,6 @@ spec:
             - podName
             type: object
           status:
-            default:
-              phase: Pending
             description: PodMigrationStatus defines the observed state of PodMigration
             properties:
               lastScheduleTime:
