@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -76,6 +77,8 @@ func (r *PodMigrationReconciler) createRestoredPodSpec(sourcePod corev1.Pod, mig
 	// TODO: Did we copy all the relevant fields?
 	var restoredPod corev1.Pod
 	restoredPod.Spec = sourcePod.Spec
+	restoredPod.Annotations = sourcePod.Annotations
+
 	restoredPod.Name = migration.Spec.NewPodName
 	restoredPod.Namespace = migration.Namespace
 	restoredPod.Spec.NodeName = migration.Spec.NodeName
@@ -92,7 +95,9 @@ func (r *PodMigrationReconciler) createRestoredPodSpec(sourcePod corev1.Pod, mig
 	return restoredPod
 }
 
-func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Request, logs logr.Logger) (*migrationv1.PodMigration, *corev1.Pod, error) {
+// TODO: implement proper reconciliation logic
+func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Request, logs logr.Logger) (*migrationv1.PodMigration, *corev1.PodPhase, error) {
+	// what if source pod is gone already?
 	migration, sourcePod, err := r.getMigrationInfo(ctx, req, logs)
 	if err != nil {
 		logs.Error(err, "failed to get Migration info")
@@ -100,8 +105,9 @@ func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Reques
 	}
 
 	restoredPod := r.createRestoredPodSpec(sourcePod, migration)
-	if err = r.Create(ctx, &restoredPod); err != nil {
-		logs.Info("failed to create restored Pod")
+	if err = r.Create(ctx, &restoredPod); err != nil && !apierrors.IsAlreadyExists(err) {
+		logs.Error(err, "failed to create restored Pod")
+		return nil, nil, err
 	}
 
 	restoredPodNamespacedName := types.NamespacedName{
@@ -114,7 +120,24 @@ func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Reques
 		return nil, nil, err
 	}
 
-	return &migration, &restoredPod, nil
+	status := restoredPod.Status.Phase
+
+	// Delete the old Pod
+	if status == corev1.PodRunning || status == corev1.PodSucceeded {
+		if err = r.Get(ctx, restoredPodNamespacedName, &sourcePod); err != nil {
+			// if pod is deleted already, then it is ok.
+			if apierrors.IsNotFound(err) {
+				return &migration, &status, nil
+			}
+
+			return nil, nil, err
+		}
+		if err = r.Delete(ctx, &sourcePod); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return &migration, &status, nil
 }
 
 // +kubebuilder:rbac:groups=migration.k8s-checkpoint-controller,resources=podmigrations,verbs=get;list;watch;create;update;patch;delete
@@ -123,17 +146,17 @@ func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Reques
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the PodMigration object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logs := log.FromContext(ctx)
-	migration, restoredPod, err := r.restorePod(ctx, req, logs)
+	migration, status, err := r.restorePod(ctx, req, logs)
 	result := ctrl.Result{}
+
+	// TODO:
+	// - Decide on namespace behaviour?
+	// - Add source pod, namespace, destination node and status when viewed by kubectl
 
 	if migration == nil {
 		result.RequeueAfter = time.Second * 5
@@ -141,7 +164,7 @@ func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	} else if err != nil {
 		migration.Status.Phase = migrationv1.Failed
 	} else {
-		migration.Status.Phase = phaseMapper[restoredPod.Status.Phase]
+		migration.Status.Phase = phaseMapper[*status]
 	}
 
 	if migration.Status.Phase != migrationv1.Succeeded {
