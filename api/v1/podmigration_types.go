@@ -67,13 +67,17 @@ type PodMigrationStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="STATUS",type=string,JSONPath=`.status.status`
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // PodMigration is the Schema for the podmigrations API
 type PodMigration struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   PodMigrationSpec   `json:"spec,omitempty"`
+	Spec PodMigrationSpec `json:"spec,omitempty"`
+
+	// +kubebuilder:default:={"status":"Pending"}
 	Status PodMigrationStatus `json:"status,omitempty"`
 }
 

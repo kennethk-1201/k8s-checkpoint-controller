@@ -51,13 +51,35 @@ type PodMigrationReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-func (r *PodMigrationReconciler) getMigrationInfo(ctx context.Context, req ctrl.Request, logs logr.Logger) (migrationv1.PodMigration, corev1.Pod, error) {
+func (r *PodMigrationReconciler) getRestoredPodInfo(ctx context.Context, migration migrationv1.PodMigration, logs logr.Logger) (corev1.Pod, error) {
+	newPodNamespacedName := types.NamespacedName{
+		Namespace: migration.Namespace,
+		Name:      migration.Spec.NewPodName,
+	}
+
+	var newPod corev1.Pod
+
+	if err := r.Get(ctx, newPodNamespacedName, &newPod); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logs.Error(err, "unable to check if new Pod is already restored")
+		}
+		return corev1.Pod{}, err
+	}
+
+	return newPod, nil
+}
+
+func (r *PodMigrationReconciler) getMigrationInfo(ctx context.Context, req ctrl.Request, logs logr.Logger) (migrationv1.PodMigration, error) {
 	var migration migrationv1.PodMigration
 	if err := r.Get(ctx, req.NamespacedName, &migration); err != nil {
 		logs.Error(err, "unable to fetch Migration")
-		return migrationv1.PodMigration{}, corev1.Pod{}, client.IgnoreNotFound(err)
+		return migrationv1.PodMigration{}, client.IgnoreNotFound(err)
 	}
 
+	return migration, nil
+}
+
+func (r *PodMigrationReconciler) getSourcePodInfo(ctx context.Context, migration migrationv1.PodMigration, logs logr.Logger) (corev1.Pod, error) {
 	var sourcePod corev1.Pod
 	podNamespacedName := types.NamespacedName{
 		Namespace: migration.Namespace,
@@ -66,10 +88,10 @@ func (r *PodMigrationReconciler) getMigrationInfo(ctx context.Context, req ctrl.
 
 	if err := r.Get(ctx, podNamespacedName, &sourcePod); err != nil {
 		logs.Error(err, "unable to fetch source Pod")
-		return migrationv1.PodMigration{}, corev1.Pod{}, err
+		return corev1.Pod{}, err
 	}
 
-	return migration, sourcePod, nil
+	return sourcePod, nil
 }
 
 func (r *PodMigrationReconciler) createRestoredPodSpec(sourcePod corev1.Pod, migration migrationv1.PodMigration) corev1.Pod {
@@ -84,55 +106,92 @@ func (r *PodMigrationReconciler) createRestoredPodSpec(sourcePod corev1.Pod, mig
 	restoredPod.Spec.NodeName = migration.Spec.NodeName
 	restoredPod.Spec.NodeSelector = migration.Spec.NodeSelector
 
+	// create annotations for restore logic
 	if restoredPod.Annotations == nil {
 		restoredPod.Annotations = map[string]string{}
 	}
 
+	// for controller
 	restoredPod.Annotations[MigrationLabel] = migration.Name
+
+	// for kubelet
 	restoredPod.Annotations[SourcePodLabel] = sourcePod.Name
 	restoredPod.Annotations[SourceNamespaceLabel] = sourcePod.Namespace
 
 	return restoredPod
 }
 
-// TODO: implement proper reconciliation logic
-func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Request, logs logr.Logger) (*migrationv1.PodMigration, *corev1.PodPhase, error) {
-	// what if source pod is gone already?
-	migration, sourcePod, err := r.getMigrationInfo(ctx, req, logs)
+// The reconciliation loop should guarantee that:
+// - the new Pod is restored with the old Pod's state
+// - the old Pod is deleted.
+func (r *PodMigrationReconciler) migratePod(ctx context.Context, req ctrl.Request, logs logr.Logger) (*migrationv1.PodMigration, *corev1.PodPhase, error) {
+	migration, err := r.getMigrationInfo(ctx, req, logs)
 	if err != nil {
 		logs.Error(err, "failed to get Migration info")
 		return nil, nil, err
 	}
 
-	restoredPod := r.createRestoredPodSpec(sourcePod, migration)
-	if err = r.Create(ctx, &restoredPod); err != nil && !apierrors.IsAlreadyExists(err) {
-		logs.Error(err, "failed to create restored Pod")
-		return nil, nil, err
+	if migration.Status.Phase == migrationv1.Succeeded {
+		podPhase := corev1.PodSucceeded
+		return &migration, &podPhase, nil
 	}
 
-	restoredPodNamespacedName := types.NamespacedName{
-		Namespace: restoredPod.Namespace,
-		Name:      restoredPod.Name,
-	}
+	restoredPod, err := r.getRestoredPodInfo(ctx, migration, logs)
 
-	if err = r.Get(ctx, restoredPodNamespacedName, &restoredPod); err != nil {
-		logs.Error(err, "unable to fetch the restored Pod")
-		return nil, nil, err
-	}
+	var status corev1.PodPhase
+	var sourcePod corev1.Pod
+	var sourcePodFound bool // for caching to prevent multiple calls
 
-	status := restoredPod.Status.Phase
-
-	// Delete the old Pod
-	if status == corev1.PodRunning || status == corev1.PodSucceeded {
-		if err = r.Get(ctx, restoredPodNamespacedName, &sourcePod); err != nil {
-			// if pod is deleted already, then it is ok.
-			if apierrors.IsNotFound(err) {
-				return &migration, &status, nil
+	if err != nil {
+		// if the new Pod is not restored yet, attempt to restore.
+		if apierrors.IsNotFound(err) {
+			sourcePod, err = r.getSourcePodInfo(ctx, migration, logs)
+			if err != nil {
+				logs.Error(err, "failed to get the source Pod info")
+				return nil, nil, err
 			}
 
+			sourcePodFound = true
+			restoredPod = r.createRestoredPodSpec(sourcePod, migration)
+
+			// Attempt to create the new Pod. If the Pod already exists, ignore the error as it
+			// means that the Pod was already restored.
+			if err = r.Create(ctx, &restoredPod); err != nil && !apierrors.IsAlreadyExists(err) {
+				logs.Error(err, "failed to create restored Pod")
+				return nil, nil, err
+			}
+
+			restoredPodNamespacedName := types.NamespacedName{
+				Namespace: restoredPod.Namespace,
+				Name:      restoredPod.Name,
+			}
+
+			if err = r.Get(ctx, restoredPodNamespacedName, &restoredPod); err != nil {
+				logs.Error(err, "unable to fetch the restored Pod")
+				return nil, nil, err
+			}
+		} else {
+			logs.Error(err, "unable to fetch the restored Pod")
 			return nil, nil, err
 		}
-		if err = r.Delete(ctx, &sourcePod); err != nil {
+	}
+
+	// at this stage, the restored Pod definitely exists
+	status = restoredPod.Status.Phase
+
+	// if the restored Pod is successfully created, we can remove the old Pod
+	if status == corev1.PodRunning || status == corev1.PodSucceeded {
+		if !sourcePodFound {
+			sourcePod, err = r.getSourcePodInfo(ctx, migration, logs)
+			if err != nil {
+				logs.Error(err, "failed to get the source Pod info")
+				return nil, nil, err
+			}
+
+			sourcePodFound = true
+		}
+
+		if err = r.Delete(ctx, &sourcePod); err != nil && !apierrors.IsNotFound(err) {
 			return nil, nil, err
 		}
 	}
@@ -151,7 +210,7 @@ func (r *PodMigrationReconciler) restorePod(ctx context.Context, req ctrl.Reques
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *PodMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logs := log.FromContext(ctx)
-	migration, status, err := r.restorePod(ctx, req, logs)
+	migration, status, err := r.migratePod(ctx, req, logs)
 	result := ctrl.Result{}
 
 	// TODO:
