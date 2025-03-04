@@ -100,6 +100,7 @@ func (r *PodMigrationReconciler) createRestoredPodSpec(sourcePod corev1.Pod, mig
 	var restoredPod corev1.Pod
 	restoredPod.Spec = sourcePod.Spec
 	restoredPod.Annotations = sourcePod.Annotations
+	restoredPod.Labels = sourcePod.Labels
 
 	restoredPod.Name = migration.Spec.NewPodName
 	restoredPod.Namespace = migration.Namespace
